@@ -3,6 +3,7 @@ name: gtm-engine
 x-backend-env: &backend-env
   ENVIRONMENT: ${ENVIRONMENT:-development}
   DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://gtm:gtm_password@postgres:5432/gtm_engine}
+  POSTGRES_URL: ${POSTGRES_URL:-postgresql://gtm:gtm_password@postgres:5432/gtm_engine}
   DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql://gtm:gtm_password@postgres:5432/gtm_engine}
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
   QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
