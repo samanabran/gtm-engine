@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -43,7 +44,7 @@ def _user_response(user) -> UserResponse:
 @dataclass(slots=True)
 class UserService(BaseService):
     revoked_tokens: set[str] = field(default_factory=set)
-    token_blacklist = build_cache_backend()
+    token_blacklist = build_cache_backend(redis_url=os.getenv("REDIS_URL"))
 
     async def register(
         self,
@@ -157,8 +158,17 @@ class UserService(BaseService):
             tokens=TokenResponse(**tokens.model_dump()),
         )
 
-    async def refresh(self, refresh_token: str) -> AuthSessionResponse:
+    async def refresh(self, refresh_token: str, *, session: AsyncSession | None = None) -> AuthSessionResponse:
         payload = decode_token(refresh_token, expected_type="refresh")
+        if session is not None:
+            user_repo = UserRepository(session)
+            try:
+                db_user = await user_repo.get(org_id=UUID(payload.org_id), object_id=UUID(payload.sub))
+            except Exception:
+                db_user = None
+            if db_user is not None:
+                tokens = create_token_pair(str(db_user.id), str(db_user.org_id), db_user.role, list(db_user.permissions or []))
+                return AuthSessionResponse(user=_user_response(db_user), tokens=TokenResponse(**tokens.model_dump()))
         return await self.issue_tokens(payload.sub)
 
     async def issue_tokens(self, user_id: str) -> AuthSessionResponse:

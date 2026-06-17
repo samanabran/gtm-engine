@@ -6,6 +6,7 @@ x-backend-env: &backend-env
   POSTGRES_URL: ${POSTGRES_URL:-postgresql://gtm:gtm_password@postgres:5432/gtm_engine}
   DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql://gtm:gtm_password@postgres:5432/gtm_engine}
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
   QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
   QDRANT_COLLECTION_PREFIX: ${QDRANT_COLLECTION_PREFIX:-gtm_engine}
   JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
@@ -15,11 +16,18 @@ x-backend-env: &backend-env
   ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-me-in-production}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:8080}
   FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost}
+  COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   ENABLE_PROMETHEUS_METRICS: ${ENABLE_PROMETHEUS_METRICS:-true}
   LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}
   LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
   LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+  LLM_MODEL: ${LLM_MODEL:-mock-model}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_API_BASE: ${OPENAI_API_BASE:-}
 
 services:
   postgres:
@@ -64,8 +72,8 @@ services:
     image: qdrant/qdrant:latest
     restart: unless-stopped
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -97,7 +105,7 @@ services:
       INTERNAL_API_PORT: "8000"
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost}
     ports:
-      - "8001:8000"
+      - "127.0.0.1:8001:8000"
     healthcheck:
       test:
         - CMD-SHELL
@@ -163,11 +171,11 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     healthcheck:
       test:
         - CMD-SHELL
-        - curl -fsS http://localhost:3000/ >/dev/null
+        - wget -qO- http://localhost:3000/ >/dev/null
       interval: 20s
       timeout: 5s
       retries: 5
