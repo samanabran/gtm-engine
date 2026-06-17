@@ -1,4 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
+
 import { apiFetch, submitJson } from "@/lib/api";
 import { backendUserToFrontend } from "@/lib/transforms";
 import { useAppStore } from "@/lib/store";
@@ -27,6 +29,7 @@ function extractSession(data: BackendAuthResponse) {
 }
 
 export function useAuth() {
+  const router = useRouter();
   const accessToken = useAppStore((state) => state.accessToken);
   const sessionUser = useAppStore((state) => state.sessionUser);
   const orgName = useAppStore((state) => state.orgName);
@@ -62,6 +65,9 @@ export function useAuth() {
     mutationFn: async () => {
       await apiFetch("/auth/logout", { method: "POST" }).catch(() => null);
       clearSession();
+    },
+    onSuccess: () => {
+      router.push("/login");
     },
   });
 

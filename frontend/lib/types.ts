@@ -131,3 +131,12 @@ export type DashboardActivity = {
   at: string;
   tone: "success" | "warning" | "neutral";
 };
+
+export type AppNotification = {
+  id: string;
+  event_type: string;
+  agent_name: string | null;
+  message: string;
+  created_at: string | null;
+  metadata: Record<string, unknown>;
+};

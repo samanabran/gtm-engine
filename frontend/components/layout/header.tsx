@@ -1,11 +1,12 @@
 "use client";
 
-import { Bell, ChevronsLeftRight, Search, Sparkles } from "lucide-react";
+import { ChevronsLeftRight, Search } from "lucide-react";
 
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NotificationBell } from "@/components/layout/notification-bell";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { useAppStore } from "@/lib/store";
 
@@ -48,13 +49,7 @@ export function Header() {
           />
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm">
-            <Sparkles className="h-4 w-4" />
-            Quick action
-          </Button>
-          <Button variant="outline" size="sm">
-            <Bell className="h-4 w-4" />
-          </Button>
+          <NotificationBell />
           <div className="flex items-center gap-3 rounded-2xl border border-border bg-white px-3 py-2">
             <Avatar src={user?.avatarUrl} alt={user?.name ?? "User"} fallback={user?.name?.slice(0, 2) ?? "U"} />
             <div className="min-w-0">
