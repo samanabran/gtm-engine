@@ -49,7 +49,12 @@ class EncryptionService:
 
 
 def _build_service() -> EncryptionService:
-    secret = os.getenv("ENCRYPTION_KEY") or os.getenv("DEV_ENCRYPTION_KEY") or "dev-encryption-key"
+    secret = os.getenv("ENCRYPTION_KEY") or os.getenv("DEV_ENCRYPTION_KEY")
+    if not secret:
+        if os.getenv("ENVIRONMENT", "development") == "development":
+            secret = "dev-encryption-key"
+        else:
+            raise RuntimeError("ENCRYPTION_KEY environment variable must be set outside development")
     return EncryptionService(key=_derive_key(secret))
 
 

@@ -6,11 +6,11 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
+from starlette.status import HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
 
 from backend.api.routers import agents, analytics, approvals, campaigns, companies, deals, events, health, integrations, jobs, leads, notifications, settings, transcripts, webhooks, auth
 from backend.core.exceptions import (
@@ -165,7 +165,10 @@ def create_app() -> FastAPI:
         return {"status": "ok", "service": "ai-gtm-engine", "version": app.version}
 
     @app.get("/metrics")
-    async def metrics() -> Response:
+    async def metrics(authorization: str | None = Header(default=None)) -> Response:
+        metrics_token = os.getenv("METRICS_TOKEN")
+        if not metrics_token or authorization != f"Bearer {metrics_token}":
+            raise HTTPException(status_code=HTTP_404_NOT_FOUND)
         payload, content_type = render_metrics()
         return Response(content=payload, media_type=content_type or CONTENT_TYPE_LATEST)
 

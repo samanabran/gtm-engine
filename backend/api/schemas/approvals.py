@@ -25,6 +25,7 @@ class ApprovalItem(BaseModel):
 
 class ApprovalActionRequest(BaseModel):
     note: str | None = None
+    body: str | None = None
 
 
 class ApprovalListResponse(PaginatedResponse[ApprovalItem]):

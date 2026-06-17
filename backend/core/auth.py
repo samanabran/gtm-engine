@@ -74,7 +74,12 @@ from pydantic import BaseModel, Field
 
 from .exceptions import AuthenticationError, TokenRevokedError
 
-JWT_SECRET = os.getenv("JWT_SECRET") or "dev-jwt-secret-change-me"
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    if os.getenv("ENVIRONMENT", "development") == "development":
+        JWT_SECRET = "dev-jwt-secret-change-me"
+    else:
+        raise RuntimeError("JWT_SECRET environment variable must be set outside development")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))

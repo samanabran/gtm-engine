@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.schemas.approvals import ApprovalActionRequest, ApprovalItem
+from backend.core.email_sender import send_sequence_email
 from backend.core.exceptions import NotFoundError, ServiceUnavailableError
 from backend.db.models import EmailSequence
 from backend.db.repositories.approval_repo import ApprovalRepository
 
 from .base import BaseService
+
+logger = logging.getLogger(__name__)
 
 
 def _seq_to_approval(seq: EmailSequence) -> ApprovalItem:
@@ -71,9 +76,33 @@ class ApprovalService(BaseService):
             raise ServiceUnavailableError(str(exc)) from exc
         if seq is None:
             raise NotFoundError("Approval not found")
+
         meta = dict(seq.metadata_json or {})
         if request.note is not None:
             meta["note"] = request.note
+        if request.body is not None and request.body.strip():
+            meta["original_body"] = seq.body
+            seq.body = request.body
+
+        # Send via Resend if contact has an email
+        contact = getattr(seq, "contact", None)
+        if contact and contact.email:
+            try:
+                msg_id = await send_sequence_email(
+                    to_email=contact.email,
+                    subject=seq.subject,
+                    body=seq.body,
+                )
+                seq.sent_at = datetime.now(tz=timezone.utc)
+                meta["resend_message_id"] = msg_id
+                meta["sent_to"] = contact.email
+                logger.info("Sequence %s sent to %s", seq.id, contact.email)
+            except Exception as exc:
+                logger.error("Failed to send sequence %s: %s", seq.id, exc)
+                meta["send_error"] = str(exc)
+        else:
+            logger.warning("Sequence %s has no contact email — skipping send", seq.id)
+
         seq.metadata_json = meta
         try:
             await session.commit()
