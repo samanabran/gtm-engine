@@ -232,19 +232,6 @@ services:
     ports:
       - "3002:3000"
 
-  nginx:
-    image: nginx:1.25-alpine
-    restart: unless-stopped
-    depends_on:
-      frontend:
-        condition: service_started
-      api:
-        condition: service_healthy
-    ports:
-      - "80:80"
-    volumes:
-      - ./infrastructure/nginx/conf:/etc/nginx:ro
-
 volumes:
   postgres_data:
   redis_data:
