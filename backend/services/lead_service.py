@@ -13,6 +13,7 @@ from backend.core.llm_router import LLMRouter, build_llm_router
 from backend.core.metrics import record_business_event
 from backend.core.prompt_manager import PromptManager, build_prompt_manager
 from backend.db.models import Contact
+from backend.db.repositories.audit_repo import AuditRepository
 from backend.db.repositories.contact_repo import ContactRepository
 
 from .base import BaseService
@@ -148,7 +149,9 @@ class LeadService(BaseService):
 
     async def score_lead(self, org_id: str, lead_id: str, *, session: AsyncSession) -> LeadResponse:
         lead = await self.get_lead(org_id, lead_id, session=session)
-        context = self.context_builder.build_lead_context(lead.model_dump())
+        lead_dict = lead.model_dump()
+        enrichment = lead_dict.get("enrichment_data") or None
+        context = self.context_builder.build_lead_context(lead_dict, enrichment=enrichment)
         response = await self.llm_router.complete(
             system=self.prompt_manager.load("icp_scoring"),
             user=context,
@@ -175,5 +178,14 @@ class LeadService(BaseService):
             raise ServiceUnavailableError(str(exc)) from exc
         if contact is None:
             raise NotFoundError("Lead not found")
+        await AuditRepository(session).append(
+            org_id=UUID(org_id),
+            data={
+                "agent_name": "icp_agent",
+                "operation": "score_lead",
+                "raw_response": reason,
+            },
+        )
+        await session.commit()
         self.state.publish_event("lead_scored", {"lead_id": lead_id, "org_id": org_id, "score": score})
         return _contact_to_lead(contact)

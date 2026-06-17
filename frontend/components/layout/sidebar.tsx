@@ -84,8 +84,8 @@ export function Sidebar({ collapsed = false }: { collapsed?: boolean }) {
           ) : null}
         </div>
         {!collapsed ? (
-          <Button variant="outline" size="sm" className="mt-4 w-full">
-            Open review queue
+          <Button variant="outline" size="sm" className="mt-4 w-full" asChild>
+            <Link href="/approvals">Open review queue</Link>
           </Button>
         ) : null}
       </div>

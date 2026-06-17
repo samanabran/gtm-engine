@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from uuid import UUID
 
-from backend.api.dependencies import get_org_id
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.api.dependencies import get_db_session, get_org_id
 from backend.core.exceptions import NotFoundError
+from backend.db.repositories.audit_repo import AuditRepository
 from backend.services.state import STATE, generate_id, utc_now
 from backend.workers.tasks import dispatch_task
 
@@ -44,6 +48,25 @@ async def run_batch_score(org_id: str = Depends(get_org_id)) -> dict[str, object
 @router.post("/run-crm-sync")
 async def run_crm_sync_job(org_id: str = Depends(get_org_id)) -> dict[str, object]:
     return _create_job(org_id, "sync_crm", {})
+
+
+@router.get("/runs")
+async def list_runs(
+    org_id: str = Depends(get_org_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, object]]:
+    records = await AuditRepository(session).list_recent(org_id=UUID(org_id), limit=50)
+    return [
+        {
+            "id": str(record.id),
+            "agentName": record.agent_name,
+            "status": "completed",
+            "message": record.operation,
+            "progress": 100,
+            "createdAt": record.created_at.isoformat(),
+        }
+        for record in records
+    ]
 
 
 @router.get("/{job_id}/status")

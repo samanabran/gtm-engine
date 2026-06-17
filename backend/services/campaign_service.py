@@ -14,6 +14,7 @@ from backend.core.exceptions import NotFoundError, ServiceUnavailableError
 from backend.core.llm_router import LLMRouter, build_llm_router
 from backend.core.prompt_manager import PromptManager, build_prompt_manager
 from backend.db.models import Campaign
+from backend.db.repositories.audit_repo import AuditRepository
 from backend.db.repositories.campaign_repo import CampaignRepository
 
 from .base import BaseService
@@ -165,6 +166,14 @@ class CampaignService(BaseService):
                     created_at=seq.created_at,
                 )
             )
+        await AuditRepository(session).append(
+            org_id=UUID(org_id),
+            data={
+                "agent_name": "outbound_agent",
+                "operation": "generate_outbound",
+                "raw_response": f"Generated {len(sequences)} sequence variant(s) for lead {lead.id}",
+            },
+        )
         try:
             await session.commit()
         except Exception as exc:
