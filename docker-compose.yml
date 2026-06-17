@@ -133,6 +133,14 @@ services:
       - sh
       - -lc
       - celery -A backend.workers.celery_app:celery_app worker --loglevel=${LOG_LEVEL:-INFO}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A backend.workers.celery_app:celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 | grep -q OK
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 20s
 
   scheduler:
     depends_on:
@@ -154,6 +162,14 @@ services:
       - sh
       - -lc
       - celery -A backend.workers.celery_app:celery_app beat --loglevel=${LOG_LEVEL:-INFO}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - for p in /proc/[0-9]*; do tr '\0' ' ' < $$p/cmdline 2>/dev/null; echo; done | grep -q beat
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   frontend:
     build:
