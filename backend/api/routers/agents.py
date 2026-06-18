@@ -92,7 +92,12 @@ async def test_llm(
     request: TestLLMRequest,
     _current_user: UserResponse = Depends(get_current_user),
 ) -> dict:
-    probe_router = LLMRouter(provider=request.provider, model=request.model, api_key=request.api_key)
+    probe_router = LLMRouter(
+        provider=request.provider,
+        model=request.model,
+        api_key=request.api_key,
+        enable_fallback_chain=False,
+    )
     try:
         response = await probe_router.complete(
             system="You are a connectivity test.",

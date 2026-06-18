@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from backend.agents.content_agent import ContentAgent
+from backend.agents.retention_agent import RetentionAgent
+
 from .context_builder import ContextBuilder, build_context_builder
 from .llm_router import LLMRouter, build_llm_router
 from .prompt_manager import PromptManager, build_prompt_manager
@@ -46,8 +49,19 @@ class GTMOrchestrator:
                 metadata={"org_id": payload.get("org_id", "unknown"), "agent_name": "outbound_agent"},
             )
             steps.append({"step": "generated", "response": response.content})
+        elif workflow_name == "retention_agent":
+            agent = RetentionAgent()
+            result = await agent.run(payload)
+            steps.append({"step": "analyzed", "response": result.__dict__})
+            return WorkflowResult(name=workflow_name, status="completed", steps=steps)
+        elif workflow_name == "content_agent":
+            agent = ContentAgent()
+            result = await agent.run(payload)
+            steps.append({"step": "generated", "response": result.__dict__})
+            return WorkflowResult(name=workflow_name, status="completed", steps=steps)
         else:
             steps.append({"step": "noop", "workflow": workflow_name})
+            return WorkflowResult(name=workflow_name, status="not_implemented", steps=steps)
         return WorkflowResult(name=workflow_name, status="completed", steps=steps)
 def build_orchestrator() -> GTMOrchestrator:
     return GTMOrchestrator()
