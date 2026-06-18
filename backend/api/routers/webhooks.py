@@ -531,3 +531,80 @@ async def outlook_reply_webhook(
         logger.warning("Outlook reply webhook error: %s", exc)
 
     return {"status": "accepted"}
+
+
+@router.post("/resend")
+async def resend_webhook(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Handle Resend email event webhooks (delivered/bounced/opened/clicked/complained).
+
+    Signature verification is enforced only when RESEND_WEBHOOK_SECRET is set,
+    matching the no-op-when-unconfigured convention used elsewhere in this module.
+    """
+    import json
+    from backend.integrations.email.resend import (
+        verify_webhook_signature,
+        parse_webhook_event,
+    )
+    from backend.db.models import EmailSequence, utc_now
+
+    body_bytes = await request.body()
+    secret = os.getenv("RESEND_WEBHOOK_SECRET", "")
+    if secret:
+        headers = {k.lower(): v for k, v in request.headers.items()}
+        if not verify_webhook_signature(payload=body_bytes, headers=headers, secret=secret):
+            raise AuthenticationError("Invalid Resend webhook signature")
+
+    try:
+        payload: dict[str, Any] = json.loads(body_bytes)
+    except Exception:
+        return {"status": "ignored", "reason": "invalid_json"}
+
+    event = parse_webhook_event(payload)
+    event_type = (event.get("event_type") or "").replace("email.", "")
+    message_id = event.get("provider_message_id")
+    if not message_id:
+        return {"status": "ignored", "reason": "no_message_id"}
+
+    result = await session.execute(select(EmailSequence))
+    target = None
+    for seq in result.scalars().all():
+        meta = seq.metadata_json or {}
+        if str(meta.get("provider_message_id", "")) == str(message_id):
+            target = seq
+            break
+    if target is None:
+        logger.debug(
+            "Resend webhook: no sequence for message_id=%s (%s)", message_id, event_type
+        )
+        return {"status": "accepted", "matched": False}
+
+    meta = dict(target.metadata_json or {})
+    now_iso = utc_now().isoformat()
+    data = payload.get("data", {}) or {}
+    if event_type == "delivered":
+        meta["delivered_at"] = now_iso
+    elif event_type == "opened":
+        meta["opened_at"] = now_iso
+    elif event_type == "clicked":
+        meta["clicked_at"] = now_iso
+        link = (data.get("click", {}) or {}).get("link")
+        if link:
+            meta["clicked_url"] = link
+    elif event_type == "bounced":
+        target.status = "bounced"
+        meta["bounced_at"] = now_iso
+        meta["bounce_type"] = (data.get("bounce", {}) or {}).get("type")
+    elif event_type == "complained":
+        target.status = "complained"
+        meta["complained_at"] = now_iso
+    else:
+        events = list(meta.get("events", []))
+        events.append({"type": event_type, "at": now_iso})
+        meta["events"] = events
+    target.metadata_json = meta
+    await session.flush()
+    await session.commit()
+    return {"status": "accepted", "matched": True, "event": event_type}

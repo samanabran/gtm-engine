@@ -5,7 +5,6 @@ from typing import Any
 
 from backend.core.logging_config import get_logger
 from backend.services import campaign_service, lead_service
-from backend.services.state import STATE, utc_now
 from backend.workers.celery_app import celery_app
 
 logger = get_logger("gtm.worker")
@@ -16,13 +15,43 @@ def _run_async(coro):
 
 
 def _mark_job(job_id: str, status: str, result: Any | None = None) -> None:
-    job = STATE.jobs.get(job_id)
-    if not job:
+    """Persist job lifecycle to the JobRun table (the single source of truth).
+    No in-memory state. Safe no-op if job_id is missing/unknown."""
+    if not job_id:
         return
-    job["status"] = status
-    job["updated_at"] = utc_now()
-    if result is not None:
-        job["result"] = result
+
+    async def _upd() -> None:
+        from uuid import UUID as _UUID
+        from sqlalchemy import select
+        from backend.db.session import build_session_factory, build_async_engine
+        from backend.db.models import JobRun, utc_now as _now
+
+        try:
+            jid = _UUID(str(job_id))
+        except Exception:
+            return
+        factory = build_session_factory(build_async_engine())
+        async with factory() as session:
+            jr = (await session.execute(select(JobRun).where(JobRun.id == jid))).scalar_one_or_none()
+            if jr is None:
+                return
+            jr.status = status
+            if status == "running" and jr.started_at is None:
+                jr.started_at = _now()
+            if status in ("completed", "failed"):
+                jr.finished_at = _now()
+            if status == "failed":
+                jr.retry_count = (jr.retry_count or 0) + 1
+            if result is not None:
+                if isinstance(result, dict) and "error" in result:
+                    jr.error_message = str(result.get("error"))
+                jr.result_data = result if isinstance(result, dict) else {"value": result}
+            await session.commit()
+
+    try:
+        _run_async(_upd())
+    except Exception:
+        logger.exception("failed to persist JobRun %s", job_id)
 
 
 @celery_app.task(name="backend.workers.tasks.enrich_contact")
@@ -106,137 +135,136 @@ def weekly_digest(
     return result
 
 
-@celery_app.task(name="backend.workers.tasks.send_approved_sequences")
-def send_approved_sequences(
-    org_id: str | None = None,
-    job_id: str | None = None,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Dispatch all approved email sequences that have not yet been sent."""
-    logger.info("send_approved_sequences", extra={"org_id": org_id or "all"})
+@celery_app.task(name="backend.workers.tasks.send_email_sequence", bind=True, max_retries=5)
+def send_email_sequence(self, sequence_id: str, job_id: str | None = None) -> dict[str, Any]:
+    """The ONLY code path permitted to deliver an email for a sequence.
+
+    Guards (all enforced here): parent campaign must be active, sequence must be
+    approved, and the send is idempotent (skips if already sending/sent).
+    Persists provider_message_id, sent_at, status, error_message, retry_count.
+    No silent failures.
+    """
     if job_id:
         _mark_job(job_id, "running")
 
     async def _run() -> dict[str, Any]:
         from sqlalchemy import select
-        from backend.db.session import build_session_factory
-        from backend.db.models import EmailSequence, Integration, Organization, Contact
+        from backend.db.session import build_session_factory, build_async_engine
+        from backend.db.models import Campaign, EmailSequence, Integration, Contact, utc_now as _now
         from backend.core.encryption import decrypt_payload
+        from backend.core.exceptions import ServiceUnavailableError
         from backend.integrations.email.gmail import GmailEmailClient
         from backend.integrations.email.outlook import OutlookEmailClient
+        from backend.integrations.email.resend import ResendEmailClient
 
-        factory = build_session_factory()
-        sent_count = 0
-        error_count = 0
-
+        factory = build_session_factory(build_async_engine())
         async with factory() as session:
-            # Get orgs to process
-            if org_id:
-                org_ids = [org_id]
-            else:
-                result = await session.execute(select(Organization.id).where(Organization.is_active.is_(True)))
-                org_ids = [str(row[0]) for row in result.all()]
+            seq = (await session.execute(
+                select(EmailSequence).where(EmailSequence.id == sequence_id)
+            )).scalar_one_or_none()
+            if seq is None:
+                return {"status": "skipped", "reason": "sequence_not_found", "sequence_id": sequence_id}
 
-            for oid in org_ids:
-                from uuid import UUID as _UUID
-                try:
-                    org_uuid = _UUID(oid)
-                except Exception:
-                    continue
+            if seq.status in ("sent", "sending"):
+                return {"status": "skipped", "reason": "already_" + seq.status, "sequence_id": sequence_id}
 
-                # Get email integration for this org
-                int_result = await session.execute(
-                    select(Integration).where(
-                        Integration.org_id == org_uuid,
-                        Integration.provider.in_(["gmail", "outlook"]),
-                        Integration.status == "connected",
-                    )
-                )
-                integration = int_result.scalar_one_or_none()
-                if integration is None:
-                    continue
+            if seq.status != "approved":
+                return {"status": "skipped", "reason": "not_approved(" + seq.status + ")", "sequence_id": sequence_id}
 
-                # Decrypt credentials
-                try:
-                    creds: dict = decrypt_payload(integration.credentials_encrypted or "")
-                    email_token = creds.get("access_token", "") or creds.get("oauth_token", "")
-                    from_address = creds.get("from_address", "") or creds.get("email", "")
-                except Exception:
-                    continue
+            campaign = (await session.execute(
+                select(Campaign).where(Campaign.id == seq.campaign_id)
+            )).scalar_one_or_none()
+            if campaign is None or campaign.status != "active":
+                return {"status": "skipped", "reason": "campaign_not_active", "sequence_id": sequence_id}
 
-                if not email_token:
-                    continue
+            if seq.contact_id is None:
+                return {"status": "skipped", "reason": "no_contact", "sequence_id": sequence_id}
+            contact = (await session.execute(
+                select(Contact).where(Contact.id == seq.contact_id)
+            )).scalar_one_or_none()
+            if contact is None or not contact.email:
+                return {"status": "skipped", "reason": "no_contact_email", "sequence_id": sequence_id}
 
-                # Pick email client
-                if integration.provider == "gmail":
-                    email_client = GmailEmailClient(oauth_token=email_token, from_address=from_address)
-                else:
-                    email_client = OutlookEmailClient(oauth_token=email_token, from_address=from_address)
-
-                # Get approved sequences for this org
-                seq_result = await session.execute(
-                    select(EmailSequence).where(
-                        EmailSequence.org_id == org_uuid,
-                        EmailSequence.status == "approved",
-                    ).limit(50)
-                )
-                sequences = seq_result.scalars().all()
-
-                for seq in sequences:
-                    try:
-                        # Get contact email
-                        if seq.contact_id is None:
-                            continue
-                        contact_result = await session.execute(
-                            select(Contact).where(Contact.id == seq.contact_id)
-                        )
-                        contact = contact_result.scalar_one_or_none()
-                        if contact is None or not contact.email:
-                            continue
-
-                        send_result = await email_client.send_email(
-                            to=contact.email,
-                            subject=seq.subject,
-                            body=seq.body,
-                        )
-                        if send_result.get("status") in ("sent", "queued"):
-                            from backend.db.models import utc_now as _now
-                            seq.status = "sent"
-                            seq.sent_at = _now()
-                            sent_count += 1
-                        else:
-                            error_count += 1
-                    except Exception as exc:
-                        logger.error("send_approved_sequences: error sending seq %s: %s", seq.id, exc)
-                        error_count += 1
-
+            # Claim the work before calling the provider so a crash leaves a
+            # recoverable 'sending' row rather than a silent gap.
+            seq.status = "sending"
             await session.commit()
 
-        return {"sent": sent_count, "errors": error_count}
+            integration = (await session.execute(
+                select(Integration).where(
+                    Integration.org_id == seq.org_id,
+                    Integration.provider.in_(["gmail", "outlook", "resend"]),
+                    Integration.status == "connected",
+                )
+            )).scalar_one_or_none()
 
-    task_result = _run_async(_run())
+            try:
+                if integration is None:
+                    raise ServiceUnavailableError("no connected email integration for org")
+                creds = decrypt_payload(integration.credentials_encrypted or "")
+                token = creds.get("access_token", "") or creds.get("oauth_token", "")
+                from_address = creds.get("from_address", "") or creds.get("email", "")
+                if integration.provider == "gmail":
+                    client = GmailEmailClient(oauth_token=token, from_address=from_address)
+                elif integration.provider == "outlook":
+                    client = OutlookEmailClient(oauth_token=token, from_address=from_address)
+                else:
+                    client = ResendEmailClient(api_key=token, from_address=from_address)
+
+                result = await client.send_email(to=contact.email, subject=seq.subject, body=seq.body)
+                if result.get("status") not in ("sent", "queued"):
+                    raise ServiceUnavailableError(
+                        result.get("detail") or result.get("reason") or "provider send failed"
+                    )
+
+                seq.status = "sent"
+                seq.sent_at = _now()
+                meta = dict(seq.metadata_json or {})
+                meta["provider"] = integration.provider
+                meta["provider_message_id"] = result.get("message_id")
+                meta["sent_to"] = contact.email
+                meta.pop("error_message", None)
+                seq.metadata_json = meta
+                await session.commit()
+                logger.info("send_email_sequence: sent seq %s via %s", sequence_id, integration.provider)
+                return {"status": "sent", "sequence_id": sequence_id, "message_id": result.get("message_id")}
+            except Exception as exc:
+                seq.status = "failed"
+                meta = dict(seq.metadata_json or {})
+                meta["error_message"] = str(exc)
+                meta["retry_count"] = int(meta.get("retry_count", 0)) + 1
+                seq.metadata_json = meta
+                await session.commit()
+                logger.error("send_email_sequence: seq %s failed: %s", sequence_id, exc)
+                raise
+
+    try:
+        result = _run_async(_run())
+    except Exception as exc:
+        if job_id:
+            _mark_job(job_id, "failed", {"error": str(exc)})
+        raise self.retry(exc=exc, countdown=min(60 * (2 ** self.request.retries), 900))
     if job_id:
-        _mark_job(job_id, "completed", task_result)
-    return task_result
-
+        _mark_job(job_id, "completed", result)
+    return result
 
 @celery_app.task(name="backend.workers.tasks.batch_score")
 def batch_score(
-    org_id: str | None = None,
     job_id: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score all unscored contacts using the ICP agent."""
+    org_id = (payload or {}).get("org_id")
     logger.info("batch_score", extra={"org_id": org_id or "all"})
     if job_id:
         _mark_job(job_id, "running")
 
     async def _run() -> dict[str, Any]:
         from sqlalchemy import select
-        from backend.db.session import build_session_factory
+        from backend.db.session import build_session_factory, build_async_engine
         from backend.db.models import Contact, Organization
 
-        factory = build_session_factory()
+        factory = build_session_factory(build_async_engine())
         scored = 0
 
         async with factory() as session:
@@ -281,7 +309,6 @@ TASK_REGISTRY = {
     "generate_outbound": generate_outbound,
     "sync_crm": sync_crm,
     "weekly_digest": weekly_digest,
-    "send_approved_sequences": send_approved_sequences,
     "batch_score": batch_score,
 }
 
