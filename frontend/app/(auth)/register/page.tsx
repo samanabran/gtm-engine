@@ -23,7 +23,7 @@ export default function RegisterPage() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      router.replace("/");
+      router.replace("/leads");
     }
   }, [isAuthenticated, router]);
 
@@ -44,7 +44,7 @@ export default function RegisterPage() {
         full_name: fullName || undefined,
         org_name: orgName || undefined,
       })
-        .then(() => router.push("/"))
+        .then(() => router.push("/leads"))
         .catch((err: unknown) =>
           setError(err instanceof Error ? err.message : "Registration failed")
         );

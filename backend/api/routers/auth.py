@@ -1,22 +1,60 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import os
+
+from fastapi import APIRouter, Cookie, Depends, Response
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.dependencies import get_current_user, get_db_session, get_org_id
-from backend.api.schemas.auth import AuthSessionResponse, LoginRequest, LogoutResponse, RefreshRequest, RegisterRequest, UserResponse
+from backend.api.schemas.auth import (
+    AuthSessionResponse,
+    LoginRequest,
+    LogoutResponse,
+    RegisterRequest,
+    UserResponse,
+)
+from backend.core.exceptions import AuthenticationError
 from backend.services import user_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_REFRESH_COOKIE = "gtm_refresh_token"
+_REFRESH_MAX_AGE = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7")) * 24 * 60 * 60
+_COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or None
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=_REFRESH_COOKIE,
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=_REFRESH_MAX_AGE,
+        domain=_COOKIE_DOMAIN,
+        path="/",
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=_REFRESH_COOKIE,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        domain=_COOKIE_DOMAIN,
+        path="/",
+    )
 
 
 @router.post("/register", response_model=AuthSessionResponse)
 async def register(
     request: RegisterRequest,
+    response: Response,
     session: AsyncSession = Depends(get_db_session),
 ) -> AuthSessionResponse:
-    return await user_service.register(
+    result = await user_service.register(
         email=request.email,
         password=request.password,
         full_name=request.full_name,
@@ -24,24 +62,43 @@ async def register(
         role=request.role,
         session=session,
     )
+    _set_refresh_cookie(response, result.tokens.refresh_token)
+    return result
 
 
 @router.post("/login", response_model=AuthSessionResponse)
 async def login(
     request: LoginRequest,
+    response: Response,
     session: AsyncSession = Depends(get_db_session),
 ) -> AuthSessionResponse:
-    return await user_service.login(email=request.email, password=request.password, session=session)
+    result = await user_service.login(
+        email=request.email, password=request.password, session=session
+    )
+    _set_refresh_cookie(response, result.tokens.refresh_token)
+    return result
 
 
 @router.post("/refresh", response_model=AuthSessionResponse)
-async def refresh(request: RefreshRequest) -> AuthSessionResponse:
-    return await user_service.refresh(request.refresh_token)
+async def refresh(
+    response: Response,
+    cookie_token: str | None = Cookie(default=None, alias=_REFRESH_COOKIE),
+    session: AsyncSession = Depends(get_db_session),
+) -> AuthSessionResponse:
+    if not cookie_token:
+        raise AuthenticationError("No refresh token")
+    result = await user_service.refresh(cookie_token, session=session)
+    _set_refresh_cookie(response, result.tokens.refresh_token)
+    return result
 
 
 @router.post("/logout", response_model=LogoutResponse)
-async def logout(current_user: UserResponse = Depends(get_current_user)) -> LogoutResponse:
+async def logout(
+    response: Response,
+    current_user: UserResponse = Depends(get_current_user),
+) -> LogoutResponse:
     await user_service.logout(current_user.id)
+    _clear_refresh_cookie(response)
     return LogoutResponse()
 
 

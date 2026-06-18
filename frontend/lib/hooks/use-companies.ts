@@ -6,7 +6,7 @@ export function useCompanies() {
   return useQuery({
     queryKey: ["companies"],
     queryFn: async () => {
-      const raw = await fetchJson<unknown>("/companies?limit=200", []);
+      const raw = await fetchJson<unknown>("/companies?page_size=200", []);
       return unwrapItems(raw as any).map((item: any) => backendCompanyToFrontend(item));
     },
   });

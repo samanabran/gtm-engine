@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.schemas.auth import UserResponse
 from backend.core.audit_logger import AuditLogger, build_audit_logger
 from backend.core.cache import CacheBackend, build_cache_backend
-from backend.core.exceptions import AuthenticationError, PermissionDeniedError, RateLimitError, ServiceUnavailableError
+from backend.core.exceptions import AuthenticationError, GTMError, PermissionDeniedError, RateLimitError, ServiceUnavailableError
 from backend.core.llm_router import LLMRouter, build_llm_router
 from backend.core.orchestrator import GTMOrchestrator, build_orchestrator
 from backend.core.permissions import has_permission
@@ -150,6 +150,11 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         factory = _get_factory()
         async with factory() as session:
             yield session
+    except GTMError:
+        raise
     except Exception as exc:
-        raise ServiceUnavailableError(f"Database unavailable: {exc}") from exc
+        from sqlalchemy.exc import SQLAlchemyError
+        if isinstance(exc, SQLAlchemyError):
+            raise ServiceUnavailableError(f"Database unavailable: {exc}") from exc
+        raise
 

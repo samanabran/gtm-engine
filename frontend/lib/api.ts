@@ -46,18 +46,19 @@ async function refreshAccessToken() {
       throw new Error("refresh failed");
     }
 
-    const payload = (await parseResponse<{ access_token: string; user: User; org_name?: string }>(response)) ?? null;
-    if (!payload?.access_token || !payload.user) {
+    const payload = (await parseResponse<{ access_token?: string; tokens?: { access_token: string }; user: User; org_name?: string }>(response)) ?? null;
+    const accessToken = payload?.access_token ?? payload?.tokens?.access_token;
+    if (!accessToken || !payload?.user) {
       throw new Error("invalid refresh payload");
     }
 
     useAppStore.getState().setSession({
-      accessToken: payload.access_token,
+      accessToken,
       user: payload.user,
       orgName: payload.org_name ?? ""
     });
 
-    return payload.access_token;
+    return accessToken;
   } catch {
     useAppStore.getState().clearSession();
     return null;
@@ -72,7 +73,7 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  if (init.body && !headers.has("Content-Type")) {
+  if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 

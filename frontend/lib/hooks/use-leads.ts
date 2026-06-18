@@ -11,7 +11,7 @@ export function useLeads() {
     queryKey: ["leads", search],
     queryFn: async () => {
       const raw = await fetchJson<{ items: Lead[] } | Lead[]>(
-        search.trim() ? `/leads?search=${encodeURIComponent(search)}&limit=200` : "/leads?limit=200",
+        search.trim() ? `/leads?search=${encodeURIComponent(search)}&page_size=200` : "/leads?page_size=200",
         []
       );
       return unwrapItems(raw as { items: unknown[]; total: number; page: number; page_size: number }).map(

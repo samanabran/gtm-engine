@@ -7,7 +7,7 @@ export function useCampaigns() {
   return useQuery({
     queryKey: ["campaigns"],
     queryFn: async () => {
-      const raw = await fetchJson<unknown>("/campaigns?limit=200", []);
+      const raw = await fetchJson<unknown>("/campaigns?page_size=200", []);
       return unwrapItems(raw as any).map((item: any) => backendCampaignToFrontend(item));
     },
   });

@@ -118,11 +118,11 @@ export function backendApprovalToFrontend(item: BackendApproval): ApprovalItem {
   };
   const stub: Lead = {
     id: item.target_id ?? item.id,
-    name: "",
+    name: item.title,
     title: "",
     company: "",
     email: "",
-    status: "pending_approval",
+    status: (item.status as Lead["status"]) ?? "pending_approval",
     icpScore: 0,
     emailRisk: 0,
     owner: "",
@@ -134,7 +134,7 @@ export function backendApprovalToFrontend(item: BackendApproval): ApprovalItem {
   return {
     id: item.id,
     lead: stub,
-    campaign: "",
+    campaign: (item.metadata?.["campaign_name"] as string) ?? item.title,
     status: (item.status as ApprovalItem["status"]) ?? "pending_approval",
     createdAt: item.created_at,
     variants: [variant],

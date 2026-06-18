@@ -20,7 +20,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      router.replace("/");
+      router.replace("/leads");
     }
   }, [isAuthenticated, router]);
 
@@ -86,7 +86,7 @@ export default function LoginPage() {
             onClick={() => {
               startTransition(() => {
                 void login({ email, password })
-                  .then(() => router.push("/"))
+                  .then(() => router.push("/leads"))
                   .catch((caughtError: unknown) => setError(caughtError instanceof Error ? caughtError.message : "Login failed"));
               });
             }}

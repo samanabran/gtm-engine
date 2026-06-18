@@ -12,7 +12,7 @@ export function useApprovals() {
   const query = useQuery({
     queryKey: ["approvals"],
     queryFn: async () => {
-      const raw = await fetchJson<unknown>("/approvals?limit=200", []);
+      const raw = await fetchJson<unknown>("/approvals?page_size=200", []);
       return unwrapItems(raw as any).map((item: any) => backendApprovalToFrontend(item));
     },
   });

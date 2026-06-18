@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAppStore } from "@/lib/store";
 
 export type AgentEvent = {
   type: "agent_started" | "agent_progress" | "agent_completed" | "agent_error";
@@ -12,9 +13,13 @@ export type AgentEvent = {
 export function useAgentEvents() {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
+  const accessToken = useAppStore((state) => state.accessToken);
 
   useEffect(() => {
-    const source = new EventSource("/api/events/agent-status");
+    if (!accessToken) return;
+
+    const url = `/api/events/agent-status?token=${encodeURIComponent(accessToken)}`;
+    const source = new EventSource(url);
 
     source.onopen = () => setConnected(true);
     source.onerror = () => setConnected(false);
@@ -28,7 +33,7 @@ export function useAgentEvents() {
     };
 
     return () => source.close();
-  }, []);
+  }, [accessToken]);
 
   return { events, connected };
 }

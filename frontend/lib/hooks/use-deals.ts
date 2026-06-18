@@ -7,7 +7,7 @@ export function useDeals() {
   return useQuery<Deal[]>({
     queryKey: ["deals"],
     queryFn: async () => {
-      const raw = await fetchJson<unknown>("/deals?limit=200", []);
+      const raw = await fetchJson<unknown>("/deals?page_size=200", []);
       return unwrapItems(raw as any).map((item: any) => backendDealToFrontend(item));
     },
   });

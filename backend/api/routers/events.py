@@ -5,16 +5,18 @@ import json
 import os
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from backend.api.dependencies import get_current_user
-from backend.api.schemas.auth import UserResponse
+from backend.core.exceptions import AuthenticationError
+from backend.services import user_service
 
 router = APIRouter(tags=["events"])
 
 _HEARTBEAT_INTERVAL = int(os.getenv("SSE_HEARTBEAT_SECONDS", "30"))
 _CHANNEL_PREFIX = "gtm:events"
+_bearer = HTTPBearer(auto_error=False)
 
 
 def _channel(org_id: str) -> str:
@@ -22,17 +24,11 @@ def _channel(org_id: str) -> str:
 
 
 async def _redis_event_stream(org_id: str, request: Request) -> AsyncGenerator[str, None]:
-    """
-    Subscribe to the Redis Pub/Sub channel for this org and stream events as
-    SSE.  Falls back to the in-process asyncio queue when Redis is unavailable
-    (e.g. local dev without Redis).
-    """
     yield ": connected\n\n"
 
     redis_client = None
     pubsub = None
 
-    # Try to acquire a Redis connection from the app state.
     try:
         redis_client = getattr(request.app.state, "redis", None)
         if redis_client is not None:
@@ -43,7 +39,6 @@ async def _redis_event_stream(org_id: str, request: Request) -> AsyncGenerator[s
         pubsub = None
 
     if pubsub is not None:
-        # ── Redis-backed path (multi-worker safe) ─────────────────────────
         try:
             while True:
                 if await request.is_disconnected():
@@ -71,7 +66,6 @@ async def _redis_event_stream(org_id: str, request: Request) -> AsyncGenerator[s
             except Exception:
                 pass
     else:
-        # ── Fallback: local asyncio queue (single-worker / dev mode) ──────
         from backend.services.state import get_state
         state = get_state()
         while True:
@@ -88,18 +82,25 @@ async def _redis_event_stream(org_id: str, request: Request) -> AsyncGenerator[s
 @router.get("/events/agent-status")
 async def agent_status_events(
     request: Request,
-    current_user: UserResponse = Depends(get_current_user),
+    token: str | None = Query(default=None),
 ) -> StreamingResponse:
     """
-    Server-Sent Events stream for real-time agent status updates.
-
-    Events are scoped to the authenticated user's org.  The stream stays open
-    indefinitely; a heartbeat comment is sent every 30 s to keep the connection
-    alive through proxies.
-
-    Nginx must be configured with ``proxy_buffering off`` and
-    ``X-Accel-Buffering: no`` for this endpoint.
+    SSE stream for real-time agent status. Accepts Bearer token via
+    Authorization header or ?token= query param (required for EventSource).
     """
+    raw_token: str | None = None
+
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        raw_token = auth_header[7:]
+    elif token:
+        raw_token = token
+
+    if not raw_token:
+        raise AuthenticationError("Missing token")
+
+    current_user = await user_service.get_current_user(raw_token)
+
     return StreamingResponse(
         _redis_event_stream(current_user.org_id, request),
         media_type="text/event-stream",
@@ -111,15 +112,6 @@ async def agent_status_events(
 
 
 async def publish_event(redis_client, org_id: str, event_type: str, payload: dict) -> None:
-    """
-    Publish an event to the org-scoped Redis channel.
-
-    Call this from services/workers after any significant state change
-    (enrichment complete, scoring complete, outbound draft ready, etc.).
-
-    Falls back silently when Redis is unavailable so the main workflow is
-    never blocked by an SSE publish failure.
-    """
     event = {"type": event_type, **payload}
     try:
         if redis_client is not None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.db.models import EmailSequence
@@ -14,7 +15,7 @@ class ApprovalRepository:
 
     async def list_pending(self, *, org_id: UUID, limit: int = 100, offset: int = 0) -> list[EmailSequence]:
         result = await self.session.execute(
-            select(EmailSequence)
+            select(EmailSequence).options(selectinload(EmailSequence.contact))
             .where(EmailSequence.org_id == org_id)
             .order_by(EmailSequence.created_at.desc())
             .limit(limit)
@@ -24,7 +25,7 @@ class ApprovalRepository:
 
     async def get(self, *, org_id: UUID, approval_id: UUID) -> EmailSequence | None:
         result = await self.session.execute(
-            select(EmailSequence).where(
+            select(EmailSequence).options(selectinload(EmailSequence.contact)).where(
                 EmailSequence.org_id == org_id,
                 EmailSequence.id == approval_id,
             )

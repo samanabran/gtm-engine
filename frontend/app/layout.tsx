@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Manrope, Space_Grotesk } from "next/font/google";
+import { Toaster } from "sonner";
 
 import "@/app/globals.css";
 import { AppProviders } from "@/components/providers";
@@ -25,6 +26,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
     <html lang="en" suppressHydrationWarning>
       <body className={`${bodyFont.variable} ${displayFont.variable} antialiased`}>
         <AppProviders>{children}</AppProviders>
+        <Toaster richColors position="top-right" />
       </body>
     </html>
   );
