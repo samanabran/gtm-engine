@@ -14,6 +14,7 @@ import httpx
 
 from backend.integrations.email.base_email import BaseEmail
 from backend.integrations.email.signature import signature_html, signature_text
+from backend.integrations.email.rate_limiter import acquire
 
 logger = logging.getLogger("gtm.integrations.resend")
 
@@ -70,6 +71,7 @@ class ResendEmailClient(BaseEmail):
         }
 
         try:
+            await acquire()
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 resp = await client.post(
                     _RESEND_SEND_URL,
