@@ -198,7 +198,7 @@ def send_email_sequence(self, sequence_id: str, job_id: str | None = None) -> di
             # before hitting the provider — avoids bounces and protects
             # sender reputation.
             from backend.integrations.email.validation import validate_for_send
-            _vr = await validate_for_send(contact.email, session=session)
+            _vr = await validate_for_send(contact.email, session=session, contact=contact)
             if not _vr.valid:
                 seq.status = "skipped"
                 _meta = dict(seq.metadata_json or {})
