@@ -4,6 +4,7 @@ Docs: https://resend.com/docs/api-reference/emails/send-email
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -71,7 +72,9 @@ class ResendEmailClient(BaseEmail):
         }
 
         try:
-            await acquire()
+            # acquire() is synchronous (uses sync redis) -- run in thread pool
+            # to avoid blocking the asyncio event loop
+            await asyncio.to_thread(acquire)
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 resp = await client.post(
                     _RESEND_SEND_URL,
