@@ -193,6 +193,22 @@ def send_email_sequence(self, sequence_id: str, job_id: str | None = None) -> di
             if contact is None or not contact.email:
                 return {"status": "skipped", "reason": "no_contact_email", "sequence_id": sequence_id}
 
+            # Pre-send validation: drop undeliverable/syntactically-invalid
+            # addresses and ones that previously hard-bounced or complained,
+            # before hitting the provider — avoids bounces and protects
+            # sender reputation.
+            from backend.integrations.email.validation import validate_for_send
+            _vr = await validate_for_send(contact.email, session=session)
+            if not _vr.valid:
+                seq.status = "skipped"
+                _meta = dict(seq.metadata_json or {})
+                _meta["skip_reason"] = "invalid_email:" + _vr.reason
+                _meta.pop("error_message", None)
+                seq.metadata_json = _meta
+                await session.commit()
+                logger.info("send_email_sequence: skipped seq %s invalid email (%s)", sequence_id, _vr.reason)
+                return {"status": "skipped", "reason": "invalid_email", "detail": _vr.reason, "sequence_id": sequence_id}
+
             # Claim the work before calling the provider so a crash leaves a
             # recoverable 'sending' row rather than a silent gap.
             seq.status = "sending"
