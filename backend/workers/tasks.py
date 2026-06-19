@@ -97,9 +97,17 @@ def generate_outbound(
     logger.info("generate_outbound", extra={"lead_id": lead_id, "campaign_id": campaign_id, "org_id": org_id})
     if job_id:
         _mark_job(job_id, "running")
-    lead = _run_async(lead_service.get_lead(org_id, lead_id))
-    result = _run_async(campaign_service.generate_outbound(org_id, campaign_id, lead))
-    payload = {"sequences": [item.model_dump() for item in result]}
+    async def _run() -> list[dict[str, Any]]:
+        from backend.db.session import build_session_factory, build_async_engine
+        factory = build_session_factory(build_async_engine())
+        async with factory() as session:
+            lead = await lead_service.get_lead(org_id, lead_id, session=session)
+            result = await campaign_service.generate_outbound(
+                org_id, campaign_id, lead, session=session
+            )
+            return [item.model_dump() for item in result]
+
+    payload = {"sequences": _run_async(_run())}
     if job_id:
         _mark_job(job_id, "completed", payload)
     return payload
