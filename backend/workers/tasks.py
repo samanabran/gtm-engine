@@ -209,6 +209,26 @@ def send_email_sequence(self, sequence_id: str, job_id: str | None = None) -> di
                 logger.info("send_email_sequence: skipped seq %s invalid email (%s)", sequence_id, _vr.reason)
                 return {"status": "skipped", "reason": "invalid_email", "detail": _vr.reason, "sequence_id": sequence_id}
 
+            # Dedupe: never send more than one sequence to the same contact
+            # in the same campaign. Multiple approved variations would each
+            # fire and double-email the prospect.
+            if seq.campaign_id is not None and seq.contact_id is not None:
+                _dup = (await session.execute(
+                    select(EmailSequence.id).where(
+                        EmailSequence.campaign_id == seq.campaign_id,
+                        EmailSequence.contact_id == seq.contact_id,
+                        EmailSequence.id != seq.id,
+                        EmailSequence.status.in_(["sending", "sent"]),
+                    ).limit(1)
+                )).first()
+                if _dup is not None:
+                    seq.status = "skipped"
+                    _m = dict(seq.metadata_json or {})
+                    _m["skip_reason"] = "duplicate_contact"
+                    seq.metadata_json = _m
+                    await session.commit()
+                    return {"status": "skipped", "reason": "duplicate_contact", "sequence_id": sequence_id}
+
             # Claim the work before calling the provider so a crash leaves a
             # recoverable 'sending' row rather than a silent gap.
             seq.status = "sending"

@@ -160,14 +160,19 @@ class CampaignService(BaseService):
         from backend.workers.tasks import send_email_sequence
 
         rows = await session.execute(
-            select(EmailSequence.id).where(
+            select(EmailSequence.id, EmailSequence.contact_id, EmailSequence.variation_rank).where(
                 EmailSequence.org_id == UUID(org_id),
                 EmailSequence.campaign_id == UUID(campaign_id),
                 EmailSequence.status == "approved",
-            )
+            ).order_by(EmailSequence.contact_id, EmailSequence.variation_rank)
         )
+        # One send per contact: keep the lowest-rank approved variation.
+        seen_contacts: set = set()
         dispatched = 0
-        for (seq_id,) in rows.all():
+        for seq_id, contact_id, _rank in rows.all():
+            if contact_id is not None and contact_id in seen_contacts:
+                continue
+            seen_contacts.add(contact_id)
             send_email_sequence.delay(sequence_id=str(seq_id))
             dispatched += 1
         return dispatched
