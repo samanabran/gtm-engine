@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.api.schemas.campaigns import CampaignCreate, CampaignResponse, CampaignUpdate, SequenceResponse
 from backend.api.schemas.leads import LeadResponse
 from backend.core.context_builder import ContextBuilder, build_context_builder
-from backend.core.exceptions import NotFoundError, ServiceUnavailableError
+from backend.core.exceptions import ConflictError, NotFoundError, ServiceUnavailableError
 from backend.core.llm_router import LLMRouter, build_llm_router
 from backend.core.prompt_manager import PromptManager, build_prompt_manager
 from backend.db.models import Campaign
@@ -30,6 +30,7 @@ def _campaign_to_response(campaign: Campaign) -> CampaignResponse:
         brand_voice=campaign.brand_voice,
         target_icp=campaign.icp_filters or {},
         metadata={},
+        status=campaign.status,
         active=campaign.is_active,
         sequences=[],
         created_at=campaign.created_at,
@@ -103,6 +104,74 @@ class CampaignService(BaseService):
             raise NotFoundError("Campaign not found")
         return _campaign_to_response(campaign)
 
+    _TRANSITIONS = {
+        "activate": ({"draft", "paused"}, "active"),
+        "pause": ({"active"}, "paused"),
+        "resume": ({"paused"}, "active"),
+        "complete": ({"draft", "active", "paused"}, "completed"),
+    }
+
+    async def set_lifecycle(
+        self,
+        org_id: str,
+        campaign_id: str,
+        action: str,
+        *,
+        session: AsyncSession,
+    ) -> CampaignResponse:
+        """Apply a campaign lifecycle transition (FSM). Illegal transitions and
+        any mutation of a completed campaign raise ConflictError (HTTP 409)."""
+        repo = CampaignRepository(session)
+        try:
+            campaign = await repo.get(org_id=UUID(org_id), object_id=UUID(campaign_id))
+        except Exception as exc:
+            raise ServiceUnavailableError(str(exc)) from exc
+        if campaign is None:
+            raise NotFoundError("Campaign not found")
+
+        if campaign.status == "completed":
+            raise ConflictError("Campaign is completed and immutable")
+        allowed_from, target = self._TRANSITIONS[action]
+        if campaign.status not in allowed_from:
+            raise ConflictError(f"Cannot {action} a campaign in '{campaign.status}' state")
+
+        campaign.status = target
+        try:
+            await session.commit()
+        except Exception as exc:
+            raise ServiceUnavailableError(str(exc)) from exc
+
+        # Activating (or resuming) a campaign dispatches its already-approved,
+        # unsent sequences through the single send path. Sends are idempotent.
+        if target == "active":
+            await self._dispatch_campaign_sends(org_id, campaign_id, session=session)
+
+        return _campaign_to_response(campaign)
+
+    async def _dispatch_campaign_sends(
+        self,
+        org_id: str,
+        campaign_id: str,
+        *,
+        session: AsyncSession,
+    ) -> int:
+        from sqlalchemy import select
+        from backend.db.models import EmailSequence
+        from backend.workers.tasks import send_email_sequence
+
+        rows = await session.execute(
+            select(EmailSequence.id).where(
+                EmailSequence.org_id == UUID(org_id),
+                EmailSequence.campaign_id == UUID(campaign_id),
+                EmailSequence.status == "approved",
+            )
+        )
+        dispatched = 0
+        for (seq_id,) in rows.all():
+            send_email_sequence.delay(sequence_id=str(seq_id))
+            dispatched += 1
+        return dispatched
+
     async def generate_outbound(
         self,
         org_id: str,
@@ -112,6 +181,8 @@ class CampaignService(BaseService):
         session: AsyncSession,
     ) -> list[SequenceResponse]:
         campaign = await self.get_campaign(org_id, campaign_id, session=session)
+        if campaign.status == "completed":
+            raise ConflictError("Campaign is completed and immutable")
         context = self.context_builder.build_full_outbound_context(
             contact=lead.model_dump(),
             campaign=campaign.model_dump(),
@@ -123,7 +194,23 @@ class CampaignService(BaseService):
             format="json",
             metadata={"org_id": org_id, "agent_name": "outbound_agent"},
         )
-        payload = json.loads(response.content)
+        # Tolerant parse: LLMs often wrap JSON in ``` fences or add prose.
+        # Never raise here — fall back to {} so the default variation is used.
+        raw_json = (response.content or "").strip()
+        import re as _re
+        if raw_json.startswith("```"):
+            raw_json = _re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw_json)
+            raw_json = _re.sub(r"\s*```$", "", raw_json).strip()
+        try:
+            payload = json.loads(raw_json)
+        except (json.JSONDecodeError, TypeError):
+            _m = _re.search(r"\{.*\}", raw_json, _re.DOTALL)
+            try:
+                payload = json.loads(_m.group(0)) if _m else {}
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
         variations: list[dict[str, Any]] = payload.get("variations", [])
         if not variations:
             variations = [
